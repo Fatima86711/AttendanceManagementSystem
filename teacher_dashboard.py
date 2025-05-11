@@ -105,16 +105,20 @@ class LeaveRequestsWindow(tk.Toplevel):
 
         self.leave_tree.pack(pady=10, fill="both", expand=True)
 
-        tk.Button(self, text="Approve Leave", command=self.approve_leave).pack(pady=5)
+        button_frame = tk.Frame(self)
+        button_frame.pack(pady=10)
+        tk.Button(button_frame, text="Approve Leave", command=self.approve_leave).grid(row=0, column=0, padx=5)
+        tk.Button(button_frame, text="Disapprove Leave", command=self.disapprove_leave).grid(row=0, column=1, padx=5)
+
 
         self.load_leave_requests()
 
     def load_leave_requests(self):
-     try:
-        conn = get_connection()
-        cursor = conn.cursor()
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
 
-        cursor.execute("""
+            cursor.execute("""
     SELECT
         student_id,
         course_name,
@@ -124,19 +128,19 @@ class LeaveRequestsWindow(tk.Toplevel):
     FROM pending_leave_requests_view
     """)
 
-        self.leave_tree.delete(*self.leave_tree.get_children())
+            self.leave_tree.delete(*self.leave_tree.get_children())
 
-        for row in cursor.fetchall():
-            self.leave_tree.insert('', tk.END, values=row)
+            for row in cursor.fetchall():
+                self.leave_tree.insert('', tk.END, values=row)
 
-        cursor.close()
-        conn.close()
+            cursor.close()
+            conn.close()
 
-     except Exception as e:
-        messagebox.showerror("Error", f"Failed to load leave requests: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load leave requests: {e}")
 
 
-        
+
     def go_back(self):
         self.destroy()
         self.parent.deiconify()
@@ -190,6 +194,44 @@ class LeaveRequestsWindow(tk.Toplevel):
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to approve leave: {e}")
+
+    def disapprove_leave(self):
+        selected_item = self.leave_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Warning", "Please select a leave request to disapprove.")
+            return
+
+        selected_values = self.leave_tree.item(selected_item)['values']
+        student_id, course_name, leave_date, reason, status = selected_values
+
+        if not messagebox.askyesno("Confirm", "Are you sure you want to disapprove this leave?"):
+            return
+
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE leave_requests
+                SET status = 'Rejected'
+                WHERE student_id = :student_id AND leave_date = TO_DATE(:leave_date, 'YYYY-MM-DD')
+                AND course_id = (SELECT course_id FROM courses WHERE course_name = :course_name)
+            """, {
+                'student_id': student_id,
+                'leave_date': leave_date,
+                'course_name': course_name,
+            })
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            messagebox.showinfo("Success", "Leave disapproved.")
+            self.leave_tree.delete(selected_item)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to disapprove leave: {e}")
+
 
 
 class AttendanceWindow(tk.Toplevel):

@@ -7,7 +7,7 @@ import oracledb
 def get_connection():
     try:
         conn = oracledb.connect(
-            user="System",
+            user="system",  # Use lowercase for username
             password="Server123",
             dsn="localhost/orcal"
         )
@@ -42,8 +42,9 @@ class StudentDashboard(tk.Tk):
 
         tk.Button(button_frame, text="View Attendance", font=("Arial", 12), command=self.view_attendance).grid(row=0, column=0, padx=5)
         tk.Button(button_frame, text="Request Leave", font=("Arial", 12), command=self.request_leave).grid(row=0, column=1, padx=5)
-        tk.Button(button_frame, text="View Stats", font=("Arial", 12), command=self.view_stats).grid(row=0, column=2, padx=5)  # New button
-        tk.Button(button_frame, text="Logout", font=("Arial", 10), command=self.destroy).grid(row=0, column=3, padx=5)
+        tk.Button(button_frame, text="View Stats", font=("Arial", 12), command=self.view_stats).grid(row=0, column=2, padx=5)
+        tk.Button(button_frame, text="View Overall Attendance", font=("Arial", 12), command=self.view_overall_attendance).grid(row=0, column=3, padx=5) # Added button
+        tk.Button(button_frame, text="Logout", font=("Arial", 10), command=self.destroy).grid(row=0, column=4, padx=5) # Adjusted column
 
         self.load_courses()
 
@@ -86,6 +87,11 @@ class StudentDashboard(tk.Tk):
         selected_course = self.get_selected_course()
         if selected_course:
             AttendanceStatsWindow(self, self.student_id, selected_course[0], selected_course[1])
+
+    def view_overall_attendance(self): # new method
+        selected_course = self.get_selected_course()
+        if selected_course:
+            OverallAttendanceWindow(self, self.student_id, selected_course[0], selected_course[1])
 
     def go_back(self):
         if self.parent:
@@ -132,7 +138,7 @@ class AttendanceRecordsWindow(tk.Toplevel):
     FROM ATTENDANCE
     WHERE COURSE_ID = :cid
     AND STUDENT_ID = :sid
-    AND DATE_ATTENDED = :selected_date
+    AND TRUNC(DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
     ORDER BY DATE_ATTENDED ASC
 """, {'cid': self.course_id, 'sid': self.student_id, 'selected_date': selected_date})
             records = cursor.fetchall()
@@ -239,7 +245,7 @@ class AttendanceStatsWindow(tk.Toplevel): #new class for stats
 
             # Call the stored procedure
             cursor.callproc('GET_ATTENDANCE_STATS',
-                              [self.student_id, self.course_id, present_count, absent_count, leave_count, total_count])
+                            [self.student_id, self.course_id, present_count, absent_count, leave_count, total_count])
 
             # Get the output values from the variables
             present_count_val = present_count.getvalue()
@@ -271,6 +277,77 @@ class AttendanceStatsWindow(tk.Toplevel): #new class for stats
         self.destroy()
         self.parent.deiconify()
 
-# if __name__ == '__main__':
-#     app = StudentDashboard('21-SE-01')
-#     app.mainloop()
+import tkinter as tk
+from tkinter import ttk, messagebox
+import oracledb
+import logging
+
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename="attendance_app.log",
+)
+
+
+def get_connection():
+    try:
+        conn = oracledb.connect(
+            user="system",
+            password="Server123",
+            dsn="localhost/orcal"
+        )
+        logging.info("Database connection successful.")  # Log success
+        return conn
+    except oracledb.DatabaseError as e:
+        logging.error(f"Database Connection Failed: {e}")
+        messagebox.showerror("Error", f"Database Connection Failed: {e}")
+        return None
+
+
+
+class OverallAttendanceWindow(tk.Toplevel):
+    def __init__(self, parent, student_id, course_id, course_name):
+        super().__init__(parent)
+        self.title(f"Overall Attendance - {course_name}")
+        self.geometry("600x400")
+        self.parent = parent
+        self.student_id = student_id
+        self.course_id = course_id
+        self.course_name = course_name
+
+        tk.Label(self, text=f"Overall Attendance for {course_name}", font=("Arial", 14, "bold")).pack(pady=10)
+        back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
+        back_button.pack(pady=5, anchor="w", padx=10)
+
+        self.tree = ttk.Treeview(self, columns=("Date", "Status"), show='headings')
+        self.tree.heading("Date", text="Date")
+        self.tree.heading("Status", text="Status")
+        self.tree.pack(pady=10, fill=tk.BOTH, expand=True)
+
+        self.load_overall_attendance()
+
+    def load_overall_attendance(self):
+     try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        attendance_cursor = cursor.var(oracledb.CURSOR)
+        cursor.callproc(
+            "GET_OVERALL_ATTENDANCE",
+            [self.student_id, self.course_id, attendance_cursor],
+        )
+        results = attendance_cursor.getvalue()
+        if results:
+            rows = results.fetchall()
+            self.tree.delete(*self.tree.get_children())
+            for row in rows:
+                formatted_date = row[0]
+                self.tree.insert('', tk.END, values=(formatted_date, row[1]))
+            results.close()
+        cursor.close()
+        conn.close()
+     except Exception as e:
+        messagebox.showerror("Error", f"Failed to load overall attendance: {e}")
+    # Correctly indented go_back method
+    def go_back(self):
+        self.destroy()
+        self.parent.deiconify()
