@@ -3,17 +3,25 @@ from tkinter import ttk, messagebox
 from tkcalendar import DateEntry
 from datetime import date
 import oracledb
+import logging
+
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename="attendance_app.log",
+)
 
 def get_connection():
     try:
         conn = oracledb.connect(
-            user="system",  # Use lowercase for username
+            user="system",
             password="Server123",
             dsn="localhost/orcal"
         )
+        logging.info("Database connection successful.")
         return conn
     except oracledb.DatabaseError as e:
-        print(f"DEBUG: Database connection error - {e}")
+        logging.error(f"Database Connection Failed: {e}")
         messagebox.showerror("Error", f"Database Connection Failed: {e}")
         return None
 
@@ -21,7 +29,7 @@ class StudentDashboard(tk.Tk):
     def __init__(self, student_id, parent=None):
         super().__init__()
         self.title("Student Dashboard")
-        self.geometry("600x400")
+        self.geometry("600x450")
         self.student_id = student_id
         self.parent = parent
 
@@ -43,24 +51,25 @@ class StudentDashboard(tk.Tk):
         tk.Button(button_frame, text="View Attendance", font=("Arial", 12), command=self.view_attendance).grid(row=0, column=0, padx=5)
         tk.Button(button_frame, text="Request Leave", font=("Arial", 12), command=self.request_leave).grid(row=0, column=1, padx=5)
         tk.Button(button_frame, text="View Stats", font=("Arial", 12), command=self.view_stats).grid(row=0, column=2, padx=5)
-        tk.Button(button_frame, text="View Overall Attendance", font=("Arial", 12), command=self.view_overall_attendance).grid(row=0, column=3, padx=5) # Added button
-        tk.Button(button_frame, text="Logout", font=("Arial", 10), command=self.destroy).grid(row=0, column=4, padx=5) # Adjusted column
+        tk.Button(button_frame, text="View Overall Attendance", font=("Arial", 12), command=self.view_overall_attendance).grid(row=0, column=3, padx=5)
+        tk.Button(self, text="Leave Request Status", font=("Arial", 12), command=self.view_leave_status).pack(pady=10)
+        tk.Button(self, text="Logout", font=("Arial", 10), command=self.destroy).pack(pady=5)
 
         self.load_courses()
+        self.show_leave_status = False
 
     def load_courses(self):
         try:
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute("""
-    SELECT c.course_id, c.course_name
-    FROM courses c
-    JOIN enrollments e ON c.course_id = e.course_id
-    WHERE e.student_id = :sid
-""", {'sid': self.student_id})
+                SELECT c.course_id, c.course_name
+                FROM courses c
+                JOIN enrollments e ON c.course_id = e.course_id
+                WHERE e.student_id = :sid
+            """, {'sid': self.student_id})
             for row in cursor.fetchall():
                 self.tree.insert("", tk.END, values=row)
-
             cursor.close()
             conn.close()
         except Exception as e:
@@ -88,10 +97,13 @@ class StudentDashboard(tk.Tk):
         if selected_course:
             AttendanceStatsWindow(self, self.student_id, selected_course[0], selected_course[1])
 
-    def view_overall_attendance(self): # new method
+    def view_overall_attendance(self):
         selected_course = self.get_selected_course()
         if selected_course:
             OverallAttendanceWindow(self, self.student_id, selected_course[0], selected_course[1])
+
+    def view_leave_status(self):
+        LeaveRequestStatusWindow(self, self.student_id)
 
     def go_back(self):
         if self.parent:
@@ -134,13 +146,13 @@ class AttendanceRecordsWindow(tk.Toplevel):
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute("""
-    SELECT DATE_ATTENDED, STATUS
-    FROM ATTENDANCE
-    WHERE COURSE_ID = :cid
-    AND STUDENT_ID = :sid
-    AND TRUNC(DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
-    ORDER BY DATE_ATTENDED ASC
-""", {'cid': self.course_id, 'sid': self.student_id, 'selected_date': selected_date})
+                SELECT DATE_ATTENDED, STATUS
+                FROM ATTENDANCE
+                WHERE COURSE_ID = :cid
+                AND STUDENT_ID = :sid
+                AND TRUNC(DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
+                ORDER BY DATE_ATTENDED ASC
+            """, {'cid': self.course_id, 'sid': self.student_id, 'selected_date': selected_date})
             records = cursor.fetchall()
             self.tree.delete(*self.tree.get_children())
 
@@ -197,9 +209,9 @@ class LeaveRequestWindow(tk.Toplevel):
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute("""
-    INSERT INTO leave_requests (student_id, course_id, leave_date, reason, status)
-    VALUES (:sid, :cid, :ldate, :reason, 'Pending')
-""", {'sid': student_id, 'cid': course_id, 'ldate': selected_date, 'reason': reason})
+                INSERT INTO leave_requests (student_id, course_id, leave_date, reason, status)
+                VALUES (:sid, :cid, :ldate, :reason, 'Pending')
+            """, {'sid': student_id, 'cid': course_id, 'ldate': selected_date, 'reason': reason})
 
             conn.commit()
             cursor.close()
@@ -213,7 +225,7 @@ class LeaveRequestWindow(tk.Toplevel):
         self.destroy()
         self.parent.deiconify()
 
-class AttendanceStatsWindow(tk.Toplevel): #new class for stats
+class AttendanceStatsWindow(tk.Toplevel):
     def __init__(self, parent, student_id, course_id, course_name):
         super().__init__(parent)
         self.title(f"Attendance Statistics - {course_name}")
@@ -264,7 +276,7 @@ class AttendanceStatsWindow(tk.Toplevel): #new class for stats
                 f"Present: {present_count_val} ({present_percentage:.2f}%)\n"
                 f"Absent: {absent_count_val} ({absent_percentage:.2f}%)\n"
                 f"Leave: {leave_count_val} ({leave_percentage:.2f}%)\n"
-                f"Total Classes: {total_classes}"  # changed Total to Total Classes
+                f"Total Classes: {total_classes}"
             ))
 
             cursor.close()
@@ -276,34 +288,6 @@ class AttendanceStatsWindow(tk.Toplevel): #new class for stats
     def go_back(self):
         self.destroy()
         self.parent.deiconify()
-
-import tkinter as tk
-from tkinter import ttk, messagebox
-import oracledb
-import logging
-
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="attendance_app.log",
-)
-
-
-def get_connection():
-    try:
-        conn = oracledb.connect(
-            user="system",
-            password="Server123",
-            dsn="localhost/orcal"
-        )
-        logging.info("Database connection successful.")  # Log success
-        return conn
-    except oracledb.DatabaseError as e:
-        logging.error(f"Database Connection Failed: {e}")
-        messagebox.showerror("Error", f"Database Connection Failed: {e}")
-        return None
-
-
 
 class OverallAttendanceWindow(tk.Toplevel):
     def __init__(self, parent, student_id, course_id, course_name):
@@ -327,27 +311,107 @@ class OverallAttendanceWindow(tk.Toplevel):
         self.load_overall_attendance()
 
     def load_overall_attendance(self):
-     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        attendance_cursor = cursor.var(oracledb.CURSOR)
-        cursor.callproc(
-            "GET_OVERALL_ATTENDANCE",
-            [self.student_id, self.course_id, attendance_cursor],
-        )
-        results = attendance_cursor.getvalue()
-        if results:
-            rows = results.fetchall()
-            self.tree.delete(*self.tree.get_children())
-            for row in rows:
-                formatted_date = row[0]
-                self.tree.insert('', tk.END, values=(formatted_date, row[1]))
-            results.close()
-        cursor.close()
-        conn.close()
-     except Exception as e:
-        messagebox.showerror("Error", f"Failed to load overall attendance: {e}")
-    # Correctly indented go_back method
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            attendance_cursor = cursor.var(oracledb.CURSOR)
+            cursor.callproc(
+                "GET_OVERALL_ATTENDANCE",
+                [self.student_id, self.course_id, attendance_cursor],
+            )
+            results = attendance_cursor.getvalue()
+            if results:
+                rows = results.fetchall()
+                self.tree.delete(*self.tree.get_children())
+                for row in rows:
+                    formatted_date = row[0]
+                    self.tree.insert('', tk.END, values=(formatted_date, row[1]))
+                results.close()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load overall attendance: {e}")
+
     def go_back(self):
         self.destroy()
         self.parent.deiconify()
+
+class LeaveRequestStatusWindow(tk.Toplevel):
+    def __init__(self, parent, student_id):
+        super().__init__(parent)
+        self.title("Leave Request Status")
+        self.geometry("650x450")
+        self.parent = parent
+        self.student_id = student_id
+
+        back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
+        back_button.pack(pady=5, anchor="w", padx=10)
+
+        tk.Label(self, text="Your Leave Requests", font=("Arial", 14, "bold")).pack(pady=10)
+
+        self.leave_tree = ttk.Treeview(self, columns=("Request ID", "Course", "Date", "Reason", "Status"), show='headings')
+        self.leave_tree.heading("Request ID", text="Request ID")  # Added Request ID
+        for col in ("Course", "Date", "Reason", "Status"):
+            self.leave_tree.heading(col, text=col)
+            self.leave_tree.column(col, width=120, anchor="center")
+        self.leave_tree.pack(pady=10, fill="both", expand=True)
+
+        self.dismiss_button = tk.Button(self, text="Dismiss Selected", command=self.dismiss_leave_request, font=("Arial", 12))
+        self.dismiss_button.pack(pady=10)
+
+        self.load_leave_requests()
+
+    def load_leave_requests(self):
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT lr.request_id, c.course_name, TO_CHAR(lr.leave_date, 'YYYY-MM-DD'), lr.reason, lr.status
+                FROM leave_requests lr
+                JOIN courses c ON lr.course_id = c.course_id
+                WHERE lr.student_id = :student_id
+            """, {'student_id': self.student_id})
+
+            for row in cursor.fetchall():
+                self.leave_tree.insert('', tk.END, values=(row[0], row[1], row[2], row[3], row[4])) # Added row[0]
+
+            cursor.close()
+            conn.close()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load leave requests: {e}")
+
+    def dismiss_leave_request(self):
+        selected_item = self.leave_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Warning", "Please select a leave request to dismiss.")
+            return
+
+        request_id = self.leave_tree.item(selected_item)['values'][0]
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM leave_requests
+                WHERE request_id = :request_id AND student_id = :student_id
+            """, {'request_id': request_id, 'student_id': self.student_id})
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+            messagebox.showinfo("Success", "Leave request dismissed successfully.")
+            # Remove the item from the Treeview *before* reloading data
+            self.leave_tree.delete(selected_item)
+            self.load_leave_requests()  # Refresh the list
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to dismiss leave request: {e}")
+
+    def go_back(self):
+        self.destroy()
+        self.parent.deiconify()
+
+if __name__ == "__main__":
+    # Replace '21-SE-01' with the actual student ID for testing
+    student_id = '21-SE-01'
+    app = StudentDashboard(student_id)
+    app.mainloop()
