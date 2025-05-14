@@ -6,6 +6,7 @@ import calendar
 from database import get_connection
 import logging
 import oracledb
+import uuid  # Import the uuid module
 
 logging.basicConfig(level=logging.ERROR,
                     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -31,8 +32,7 @@ class AddStudentWindow(tk.Toplevel):
         back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
         back_button.pack(pady=5, anchor="w", padx=10)
 
-    
-    
+
     def add_student(self):
         student_id = self.student_id_entry.get().strip()
         if not student_id:
@@ -41,11 +41,12 @@ class AddStudentWindow(tk.Toplevel):
         try:
             conn = get_connection()
             cursor = conn.cursor()
+            enrollment_id = str(uuid.uuid4())  # Generate a UUID
             query = """
                 INSERT INTO enrollments (enrollment_id, student_id, course_id)
-                VALUES (enrollment_seq.NEXTVAL, :student_id, :course_id)
+                VALUES (:enrollment_id, :student_id, :course_id)
             """
-            cursor.execute(query, {'student_id': student_id, 'course_id': self.course_id})
+            cursor.execute(query, {'enrollment_id': enrollment_id, 'student_id': student_id, 'course_id': self.course_id})
             conn.commit()
             cursor.close()
             conn.close()
@@ -59,8 +60,52 @@ class AddStudentWindow(tk.Toplevel):
         self.parent.deiconify()
 
 
+class RemoveStudentWindow(tk.Toplevel):
+    def __init__(self, parent, course_id):
+        super().__init__(parent)
+        self.title("Remove Student from Course")
+        self.geometry("300x150")
+        self.course_id = course_id
+        self.parent = parent
 
-    
+        tk.Label(self, text=f"Remove Student from Course: {course_id}", font=("Arial", 12)).pack(pady=10)
+        tk.Label(self, text="Student ID:").pack()
+        self.student_id_entry = tk.Entry(self)
+        self.student_id_entry.pack(pady=5)
+
+        remove_button = tk.Button(self, text="Remove Student", command=self.remove_student)
+        remove_button.pack(pady=10)
+
+        back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
+        back_button.pack(pady=5, anchor="w", padx=10)
+
+    def remove_student(self):
+        student_id = self.student_id_entry.get().strip()
+        if not student_id:
+            messagebox.showwarning("Input Error", "Please enter a student ID.")
+            return
+        if not messagebox.askyesno("Confirm", f"Are you sure you want to remove student {student_id} from course {self.course_id}?"):
+            return
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            query = """
+                DELETE FROM enrollments
+                WHERE student_id = :student_id AND course_id = :course_id
+            """
+            cursor.execute(query, {'student_id': student_id, 'course_id': self.course_id})
+            conn.commit()
+            cursor.close()
+            conn.close()
+            messagebox.showinfo("Success", f"Student {student_id} removed from course {self.course_id}.")
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not remove student: {e}")
+
+    def go_back(self):
+        self.destroy()
+        self.parent.deiconify()
+
 
 
 class TeacherDashboard(tk.Tk):
@@ -68,11 +113,11 @@ class TeacherDashboard(tk.Tk):
         super().__init__()
         self.teacher_id = teacher_id
         self.title("Teacher Dashboard")
-        self.geometry("600x400")
+        self.geometry("600x400") # Adjusted height
 
         tk.Label(self, text="Welcome to Attendance System", font=("Arial", 18, "bold")).pack(pady=10)
 
-        self.course_listbox = tk.Listbox(self, font=("Arial", 12), width=50, height=10)
+        self.course_listbox = tk.Listbox(self, font=("Arial", 12), width=50, height=8) # Reduced height slightly
         self.course_listbox.pack(pady=10)
 
         self.load_courses()
@@ -82,8 +127,7 @@ class TeacherDashboard(tk.Tk):
 
         tk.Button(button_frame, text="Mark Attendance", font=("Arial", 12, "bold"), command=self.open_attendance_window).grid(row=0, column=0, padx=5)
         tk.Button(button_frame, text="View Attendance Records", font=("Arial", 12), command=self.view_attendance_records).grid(row=0, column=1, padx=5)
-        tk.Button(button_frame, text="Add Student to Course", font=("Arial", 12), command=self.add_student_to_course).grid(row=0, column=2, padx=5)
-        tk.Button(button_frame, text="Leave Requests", font=("Arial", 12, "bold"), command=self.view_leave_requests).grid(row=1, column=1, pady=10)
+        tk.Button(button_frame, text="Leave Requests", font=("Arial", 12, "bold"), command=self.view_leave_requests).grid(row=1, column=0, columnspan=2, pady=10) # Moved Leave Requests down
 
         tk.Button(self, text="Logout", font=("Arial", 10), command=self.logout).pack(pady=10)
 
@@ -135,12 +179,6 @@ class TeacherDashboard(tk.Tk):
         selected_course = self.get_selected_course()
         if selected_course:
             AttendanceRecordsWindow(self, selected_course[0], selected_course[1])
-
-    def add_student_to_course(self):
-        selected_course = self.get_selected_course()
-        if selected_course:
-            AddStudentWindow(self, selected_course[0]) # Pass self and course_id
-
 
     def view_leave_requests(self):
         AllLeaveRequestsWindow(self, self.teacher_id) # Use the new window
@@ -310,8 +348,8 @@ class AttendanceWindow(tk.Toplevel):
         self.course_name = course_name
         self.parent = parent
         tk.Label(self, text=f"Mark Attendance for {course_name}", font=("Arial", 16, "bold")).pack(pady=10)
-        back_button = tk.Button(self, text="\u2190 Back", command = self.go_back, font=("Arial", 12))
-        back_button.pack(pady = 5, anchor = "w", padx=10)
+        back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
+        back_button.pack(pady=5, anchor="w", padx=10)
         tk.Label(self, text="Select Attendance Date:", font=("Arial", 12)).pack()
         self.date_picker = DateEntry(self, width=12, font=("Arial", 12))
         self.date_picker.pack(pady=5)
@@ -372,7 +410,7 @@ class AttendanceWindow(tk.Toplevel):
                     tk.Label(frame, text="Leave (Approved)", font=("Arial", 12, "bold")).grid(row=idx, column=1, padx=5, columnspan=3)
                 else:
                     tk.Radiobutton(frame, text="Present", variable=var, value="Present").grid(row=idx, column=1, padx=5)
-                    tk.Radiobutton(frame, text="Absent", variable=var, value="Absent").grid(row=idx,column=2, padx=5)
+                    tk.Radiobutton(frame, text="Absent", variable=var, value="Absent").grid(row=idx, column=2, padx=5)
                     tk.Radiobutton(frame, text="Leave", variable=var, value="Leave").grid(row=idx, column=3, padx=5)
 
                 # Store the StringVar for this student's attendance status in the
@@ -479,6 +517,7 @@ class AttendanceWindow(tk.Toplevel):
         self.destroy()
         self.parent.deiconify()
 
+
 class AttendanceRecordsWindow(tk.Toplevel):
     def __init__(self, parent, course_id, course_name):
         super().__init__(parent)
@@ -561,7 +600,6 @@ class AttendanceRecordsWindow(tk.Toplevel):
     def go_back(self):
         self.destroy()
         self.parent.deiconify()
-
 
 if __name__ == "__main__":
     teacher_id = 'T004' # Replace with actual teacher ID from login
