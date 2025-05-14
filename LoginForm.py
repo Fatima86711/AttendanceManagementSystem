@@ -102,6 +102,13 @@ class CRUDWindow(tk.Toplevel):
             self.data_treeview.insert("", tk.END, values=row)
 
     def delete_record_from_table(self, table_name):
+        """
+        Deletes a selected record from the specified table and handles
+        foreign key constraints for the 'students' table.
+
+        Args:
+            table_name (str): The name of the table from which to delete the record.
+        """
         selected_item = self.data_treeview.selection()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a record to delete.")
@@ -118,19 +125,67 @@ class CRUDWindow(tk.Toplevel):
             cursor = conn.cursor()
             primary_key_column = self.data_treeview["columns"][0]
             primary_key_value = record_values[0]
+
+            if table_name == "students":
+                # Identify child tables that have a foreign key referencing students(student_id)
+                child_tables = ["enrollments", "attendance"]  # Based on your provided schema
+
+                # Delete related records in child tables
+                for child_table in child_tables:
+                    delete_child_query = f"DELETE FROM {child_table} WHERE student_id = :1"
+                    try:
+                        cursor.execute(delete_child_query, (primary_key_value,))
+                        print(f"DEBUG: Deleted {cursor.rowcount} records from {child_table} for student_id {primary_key_value}")
+                    except cx_Oracle.Error as e:
+                        messagebox.showerror("Database Error", f"Error deleting related records from {child_table}: {e}")
+                        conn.rollback()
+                        cursor.close()
+                        conn.close()
+                        return
+
+                # Handle assignments table separately as it doesn't directly link to student_id
+                delete_assignments_query = "DELETE FROM assignments WHERE teacher_id IN (SELECT teacher_id FROM teachers WHERE department_name = (SELECT department_name FROM students WHERE student_id = :1))"
+                try:
+                    cursor.execute(delete_assignments_query, (primary_key_value,))
+                    print(f"DEBUG: Deleted {cursor.rowcount} records from assignments related to student's department for student_id {primary_key_value}")
+                except cx_Oracle.Error as e:
+                    messagebox.showerror("Database Error", f"Error deleting related records from assignments: {e}")
+                    conn.rollback()
+                    cursor.close()
+                    conn.close()
+                    return
+
+                delete_leave_requests_query = "DELETE FROM leave_requests WHERE student_id = :1"
+                try:
+                    cursor.execute(delete_leave_requests_query, (primary_key_value,))
+                    print(f"DEBUG: Deleted {cursor.rowcount} records from leave_requests for student_id {primary_key_value}")
+                except cx_Oracle.Error as e:
+                    messagebox.showerror("Database Error", f"Error deleting related records from leave_requests: {e}")
+                    conn.rollback()
+                    cursor.close()
+                    conn.close()
+                    return
+
+            # Now delete the record from the selected table
             query = f"DELETE FROM {table_name} WHERE {primary_key_column} = :1"
             cursor.execute(query, (primary_key_value,))
             conn.commit()
+
             if cursor.rowcount > 0:
                 messagebox.showinfo("Success", "Record deleted successfully.")
-                self.read_data_from_table(table_name)
+                self.read_data_from_table(table_name)  # Refresh the Treeview
             else:
                 messagebox.showerror("Error", "Failed to delete record.")
+
             cursor.close()
             conn.close()
-        except cx_Oracle.Error as e:
-            self.handle_database_error(e, f"Error deleting record from table '{table_name}'")
 
+        except cx_Oracle.Error as e:
+            conn.rollback()  # Rollback changes in case of error
+            self.handle_database_error(e, f"Error deleting record from table '{table_name}'")
+    
+    
+    
     def open_insert_dialog(self, table_name):
         try:
             conn = get_connection()
@@ -160,14 +215,42 @@ class CRUDWindow(tk.Toplevel):
             self.handle_database_error(e, f"Error fetching table information for '{table_name}'")
 
     def insert_new_record(self, table_name, columns, entries, insert_dialog):
-        values = [entries[col].get().strip() for col in columns]
+        values = []
+        column_names = []
+        for col in columns:
+            value = entries[col].get().strip()
+            values.append(value)
+            column_names.append(col)
+
         placeholders = ", ".join([":{}".format(i + 1) for i in range(len(columns))])
-        sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+        sql = f"INSERT INTO {table_name} ({', '.join(column_names)}) VALUES ({placeholders})"
+
         try:
             conn = get_connection()
             if conn is None:
                 return
             cursor = conn.cursor()
+
+            # Convert DATE_OF_BIRTH string to a format Oracle understands
+            date_of_birth_index = -1
+            try:
+                date_of_birth_index = column_names.index('DATE_OF_BIRTH')
+                # No need to embed TO_DATE in the SQL here. Let cx_Oracle handle the binding.
+                pass
+            except ValueError:
+                pass # DATE_OF_BIRTH column might not exist
+
+            if date_of_birth_index != -1 and values[date_of_birth_index]:
+                try:
+                    # You might need to adjust the format string to match user input exactly
+                    import datetime
+                    values[date_of_birth_index] = datetime.datetime.strptime(values[date_of_birth_index], '%Y-%m-%d').date()
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid date format. Please use YYYY-MM-DD for Date of Birth.")
+                    cursor.close()
+                    conn.close()
+                    return
+
             cursor.execute(sql, values)
             conn.commit()
             messagebox.showinfo("Success", "Record inserted successfully.")
@@ -177,7 +260,8 @@ class CRUDWindow(tk.Toplevel):
             conn.close()
         except cx_Oracle.Error as e:
             self.handle_database_error(e, f"Error inserting record into table '{table_name}'")
-
+    
+    
     def open_update_dialog(self, table_name):
         if table_name != "students":
             messagebox.showerror("Error", f"Update operation is only supported for the 'students' table.")
