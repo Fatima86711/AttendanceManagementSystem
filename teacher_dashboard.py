@@ -236,7 +236,9 @@ class AllLeaveRequestsWindow(tk.Toplevel):
                         c.COURSE_NAME,
                         TO_CHAR(lr.LEAVE_DATE, 'YYYY-MM-DD'),
                         lr.REASON,
-                        lr.STATUS
+                        lr.STATUS,
+                        lr.COURSE_ID,
+                        TO_CHAR(lr.LEAVE_DATE, 'YYYY-MM-DD')
                     FROM leave_requests lr
                     JOIN courses c ON lr.COURSE_ID = c.COURSE_ID
                     WHERE lr.STATUS = 'Pending'
@@ -271,6 +273,8 @@ class AllLeaveRequestsWindow(tk.Toplevel):
         try:
             conn = get_connection()
             cursor = conn.cursor()
+
+            # Update the leave request status
             cursor.execute(
                 """
                     UPDATE leave_requests
@@ -288,10 +292,36 @@ class AllLeaveRequestsWindow(tk.Toplevel):
                 },
             )
             conn.commit()
+
+            # Automatically mark attendance as 'Leave' if not already present
+            cursor.execute("""
+                MERGE INTO ATTENDANCE a
+                USING (SELECT :sid AS student_id,
+                              (SELECT course_id FROM courses WHERE course_name = :cname) AS course_id,
+                              TO_DATE(:ldate, 'YYYY-MM-DD') AS date_attended,
+                              :day_attended AS day_attended,
+                              'Leave' AS status
+                       FROM dual) s
+                ON (a.STUDENT_ID = s.student_id AND a.COURSE_ID = s.course_id AND TRUNC(a.DATE_ATTENDED) = s.date_attended)
+                WHEN NOT MATCHED THEN
+                    INSERT (ATTENDANCE_ID, STUDENT_ID, COURSE_ID, DATE_ATTENDED, DAY_ATTENDED, STATUS)
+                    VALUES (attendance_seq.NEXTVAL, s.student_id, s.course_id, s.date_attended, s.day_attended, s.status)
+                WHEN MATCHED THEN
+                    UPDATE SET a.STATUS = s.status, a.DAY_ATTENDED = s.day_attended
+            """, {
+                "sid": student_id,
+                "cname": course_name,
+                "ldate": leave_date_str,
+                "day_attended": calendar.day_name[datetime.datetime.strptime(leave_date_str, '%Y-%m-%d').weekday()]
+            })
+            conn.commit()
+
             cursor.close()
             conn.close()
-            messagebox.showinfo("Success", "Leave request approved.")
+            messagebox.showinfo("Success", "Leave request approved and attendance marked as 'Leave'.")
             self.load_leave_requests()  # Refresh the list
+            # If the AttendanceWindow is currently open and showing the same course
+            # and date, it might need a manual refresh to reflect the change.
         except oracledb.DatabaseError as e:
             messagebox.showerror("Error", f"Error approving leave: {e}")
 
@@ -342,42 +372,46 @@ class AttendanceWindow(tk.Toplevel):
     def __init__(self, parent, teacher_id, course_id, course_name):
         super().__init__(parent)
         self.title(f"Mark Attendance - {course_name}")
-        self.geometry("750x600")
+        self.geometry("750x800")
         self.teacher_id = teacher_id
         self.course_id = course_id
         self.course_name = course_name
         self.parent = parent
-        tk.Label(self, text=f"Mark Attendance for {course_name}", font=("Arial", 16, "bold")).pack(pady=10)
+        tk.Label(self, text=f"Mark Attendance for {course_name}",font=("Arial", 16, "bold")).pack(pady=10)
         back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
-        back_button.pack(pady=5, anchor="w", padx=10)
+        back_button.pack(pady=5, anchor="w",padx=10)
         tk.Label(self, text="Select Attendance Date:", font=("Arial", 12)).pack()
-        self.date_picker = DateEntry(self, width=12, font=("Arial", 12))
+        self.date_picker = DateEntry(self, width=12, font=("Arial", 12), command=self.load_students_on_date)
         self.date_picker.pack(pady=5)
 
-        frame = tk.Frame(self)
-        frame.pack(pady=10, fill="both", expand=True)
+        self.students_frame = tk.Frame(self)
+        self.students_frame.pack(pady=10, fill="both", expand=True)
 
-        tk.Label(frame, text="Student ID - Name", font=("Arial", 12, "bold")).grid(row=0, column=0, padx=10, pady=5)
-        tk.Label(frame, text="Status", font=("Arial", 12, "bold")).grid(row=0, column=1, padx=10, pady=5, columnspan=3)
+        self.status_label = tk.Label(self.students_frame, text="Student ID - Name", font=("Arial", 12, "bold"))
+        self.status_label.grid(row=0, column=0, padx=10, pady=5)
+        self.attendance_label = tk.Label(self.students_frame, text="Status", font=("Arial", 12, "bold"))
+        self.attendance_label.grid(row=0, column=1, padx=10, pady=5, columnspan=3)
 
         self.attendance_vars = {}
+        self.student_widgets = {}
 
-        self.load_students(frame)
+        self.load_students_on_date()
 
         save_btn = tk.Button(self, text="Save Attendance", font=("Arial", 12, "bold"), command=self.save_attendance)
         save_btn.pack(pady=10)
 
-    def load_students(self, frame):
-        """
-        Loads the list of students enrolled in the current course from the database
-        and displays them in the provided frame with attendance status options
-        (Present, Absent, Leave). It also pre-selects 'Leave' if a student has an
-        approved leave for the selected date.
 
-        Args:
-            frame (tk.Frame): The Tkinter frame where the student list and
-                             attendance options will be displayed.
-        """
+        update_btn = tk.Button(self, text="Update Attendance", font=("Arial", 12), command=self.update_attendance)
+        update_btn.pack(pady=5)
+
+    def load_students_on_date(self):
+        for widgets in self.student_widgets.values():
+            for widget in widgets:
+                widget.destroy()
+        self.student_widgets.clear()
+        self.load_students(self.students_frame, self.date_picker.get_date())
+
+    def load_students(self, frame, selected_date):
         try:
             conn = get_connection()
             cursor = conn.cursor()
@@ -385,37 +419,34 @@ class AttendanceWindow(tk.Toplevel):
                 SELECT s.student_id, (s.first_name || ' ' || s.last_name) AS student_name
                 FROM course_students_view s
                 WHERE s.course_id = :course_id
+                ORDER BY s.student_id
             """
             cursor.execute(query, {'course_id': self.course_id})
 
-            # Iterate through each student fetched from the database
-            for idx, (student_id, student_name) in enumerate(cursor.fetchall(), start=1):
-                # Display the student ID and name in the frame
-                tk.Label(frame, text=f"{student_id} - {student_name}", font=("Arial", 12)).grid(row=idx, column=0, sticky="w", padx=10, pady=5)
+            row_num = 1
+            widgets_for_student = []
+            for student_id, student_name in cursor.fetchall():
+                student_label = tk.Label(frame, text=f"{student_id} - {student_name}", font=("Arial", 12))
+                student_label.grid(row=row_num, column=0, sticky="w", padx=10, pady=5)
+                widgets_for_student.append(student_label)
 
-                # Determine the initial attendance status for the student.
-                # It checks if the student has an approved leave for the currently
-                # selected date in the da(
-                # te picker.
-                initial_status = self.get_leave_status(student_id, self.date_picker.get_date())
-
-                # Create a Tkinter StringVar to hold the attendance status for this student.
-                # Initialize it with the determined initial status.
+                initial_status = self.get_initial_attendance_status(student_id, selected_date)
                 var = tk.StringVar(value=initial_status)
-
-                # If the initial status is 'Leave', display a non-interactive label
-                # indicating that the leave is approved. Otherwise, create radio buttons
-                # for 'Present', 'Absent', and 'Leave' options.
-                if var.get() == "Leave":
-                    tk.Label(frame, text="Leave (Approved)", font=("Arial", 12, "bold")).grid(row=idx, column=1, padx=5, columnspan=3)
-                else:
-                    tk.Radiobutton(frame, text="Present", variable=var, value="Present").grid(row=idx, column=1, padx=5)
-                    tk.Radiobutton(frame, text="Absent", variable=var, value="Absent").grid(row=idx, column=2, padx=5)
-                    tk.Radiobutton(frame, text="Leave", variable=var, value="Leave").grid(row=idx, column=3, padx=5)
-
-                # Store the StringVar for this student's attendance status in the
-                # self.attendance_vars dictionary, using the student ID as the key.
                 self.attendance_vars[student_id] = var
+
+                present_radio = tk.Radiobutton(frame, text="Present", variable=var, value="Present")
+                present_radio.grid(row=row_num, column=1, padx=5)
+                widgets_for_student.append(present_radio)
+                absent_radio = tk.Radiobutton(frame, text="Absent", variable=var, value="Absent")
+                absent_radio.grid(row=row_num, column=2, padx=5)
+                widgets_for_student.append(absent_radio)
+                leave_radio = tk.Radiobutton(frame, text="Leave", variable=var, value="Leave")
+                leave_radio.grid(row=row_num, column=3, padx=5)
+                widgets_for_student.append(leave_radio)
+
+                self.student_widgets[student_id] = widgets_for_student
+                widgets_for_student = []
+                row_num += 1
 
             cursor.close()
             conn.close()
@@ -423,95 +454,134 @@ class AttendanceWindow(tk.Toplevel):
             logging.error(f"Failed to load students: {e}")
             messagebox.showerror("Error", f"Failed to load students: {e}")
 
+
+    def get_initial_attendance_status(self, student_id, selected_date):
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status
+                FROM ATTENDANCE
+                WHERE STUDENT_ID = :student_id
+                  AND COURSE_ID = :course_id
+                  AND TRUNC(DATE_ATTENDED) = TO_DATE(:date_attended, 'YYYY-MM-DD')
+            """, {
+                'student_id': student_id,
+                'course_id': self.course_id,
+                'date_attended': selected_date.strftime('%Y-%m-%d')
+            })
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if result:
+                return result[0]
+            else:
+                return self.get_leave_status(student_id, selected_date)
+        except Exception as e:
+            logging.error(f"Failed to get initial attendance status: {e}")
+            return self.get_leave_status(student_id, selected_date)
+
     def get_leave_status(self, student_id, selected_date):
         try:
             conn = get_connection()
             cursor = conn.cursor()
-
             cursor.execute("""
-                SELECT plrv.status
-                FROM PENDING_LEAVE_REQUESTS_VIEW plrv
-                WHERE plrv.student_id = :student_id
-                AND TO_DATE(plrv.leave_date, 'YYYY-MM-DD') = TO_DATE(:date_attended, 'YYYY-MM-DD')
-                AND plrv.status = 'Approved' -- Still checking for 'Approved' status
+                SELECT 1
+                FROM leave_requests
+                WHERE STUDENT_ID = :student_id
+                  AND COURSE_ID = :course_id
+                  AND TRUNC(LEAVE_DATE) = TO_DATE(:date_attended, 'YYYY-MM-DD')
+                  AND STATUS = 'Approved'
             """, {
                 'student_id': student_id,
+                'course_id': self.course_id,
                 'date_attended': selected_date.strftime('%Y-%m-%d')
             })
-
             result = cursor.fetchone()
             cursor.close()
             conn.close()
-
-            return result[0] if result else "Present"
-
+            return "Leave" if result else "Absent"
         except Exception as e:
             logging.error(f"Failed to check leave status: {e}")
             messagebox.showerror("Error", f"Failed to check leave status: {e}")
-            return "Present"
-
+            return "Absent"
 
     def save_attendance(self):
-        """
-        Saves the marked attendance for the selected date into the database.
-        It iterates through the students and their selected attendance status,
-        checks if an approved leave exists for the student on that date,
-        and then inserts or updates the attendance record accordingly.
-        """
         selected_date = self.date_picker.get_date()
-
         try:
             conn = get_connection()
             cursor = conn.cursor()
 
-            # Iterate through each student and their selected attendance status
+            # Check if attendance has already been taken for this course and date
+            cursor.execute("""
+                SELECT 1
+                FROM ATTENDANCE
+                WHERE COURSE_ID = :cid
+                  AND TRUNC(DATE_ATTENDED) = TO_DATE(:dat, 'YYYY-MM-DD')
+            """, {
+                'cid': self.course_id,
+                'dat': selected_date.strftime('%Y-%m-%d')
+            })
+            attendance_exists = cursor.fetchone()
+
+            if attendance_exists:
+                messagebox.showwarning("Warning", "Attendance for this course on this date has already been recorded. Use 'Update Attendance' to modify.");
+                cursor.close()
+                conn.close()
+                return
+
             for student_id, var in self.attendance_vars.items():
                 status = var.get()
-
-                # Check if the student has an approved leave for the selected date
-                cursor.execute("""
-                    SELECT plrv.status
-                    FROM PENDING_LEAVE_REQUESTS_VIEW plrv
-                    WHERE plrv.student_id = :student_id
-                    AND TO_DATE(plrv.leave_date, 'YYYY-MM-DD') = TO_DATE(:date_attended, 'YYYY-MM-DD')
-                    AND plrv.status = 'Approved'
-                """, {
-                    'student_id': student_id,
-                    'date_attended': selected_date.strftime('%Y-%m-%d')
-                })
-
-                leave_result = cursor.fetchone()
-                # If an approved leave exists, force the status to 'Leave'
-                if leave_result:
-                    status = 'Leave'
-
-                # Insert the attendance record into the ATTENDANCE table
                 cursor.execute("""
                     INSERT INTO ATTENDANCE (ATTENDANCE_ID, STUDENT_ID, COURSE_ID, DATE_ATTENDED, DAY_ATTENDED, STATUS)
-                    VALUES (attendance_seq.NEXTVAL, :student_id, :course_id,
-                            TO_DATE(:date_attended, 'YYYY-MM-DD'),
-                            :day_attended, :status)
+                    VALUES (attendance_seq.NEXTVAL, :sid, :cid, TO_DATE(:dat, 'YYYY-MM-DD'), :day, :stat)
                 """, {
-                    'student_id': student_id,
-                    'course_id': self.course_id,
-                    'date_attended': selected_date.strftime('%Y-%m-%d'),
-                    'day_attended': calendar.day_name[selected_date.weekday()],
-                    'status': status
+                    'sid': student_id,
+                    'cid': self.course_id,
+                    'dat': selected_date.strftime('%Y-%m-%d'),
+                    'stat': status,
+                    'day': calendar.day_name[selected_date.weekday()]
                 })
-
-            # Commit the changes to the database
             conn.commit()
             cursor.close()
             conn.close()
-
             messagebox.showinfo("Success", "Attendance saved.")
-            self.destroy()
-            self.master.deiconify()
-
+        except oracledb.IntegrityError:
+            conn.rollback()
+            messagebox.showerror("Error", "Error saving attendance (duplicate entry).")
         except Exception as e:
+            conn.rollback()
             logging.error(f"Failed to save attendance: {e}")
             messagebox.showerror("Error", f"Failed to save attendance: {e}")
 
+
+    def update_attendance(self):
+        selected_date = self.date_picker.get_date()
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            for student_id, var in self.attendance_vars.items():
+                status = var.get()
+                cursor.execute("""
+                    UPDATE ATTENDANCE
+                    SET STATUS = :stat
+                    WHERE STUDENT_ID = :sid
+                      AND COURSE_ID = :cid
+                      AND TRUNC(DATE_ATTENDED) = TO_DATE(:dat, 'YYYY-MM-DD')
+                """, {
+                    'stat': status,
+                    'sid': student_id,
+                    'cid': self.course_id,
+                    'dat': selected_date.strftime('%Y-%m-%d')
+                })
+            conn.commit()
+            cursor.close()
+            conn.close()
+            messagebox.showinfo("Success", "Attendance updated.")
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Failed to update attendance: {e}")
+            messagebox.showerror("Error", f"Failed to update attendance: {e}")
 
     def go_back(self):
         self.destroy()
@@ -527,10 +597,10 @@ class AttendanceRecordsWindow(tk.Toplevel):
 
         tk.Label(self, text=f"Attendance Records for {course_name}", font=("Arial", 14, "bold")).pack(pady=10)
         back_button = tk.Button(self, text="\u2190 Back", command=self.go_back, font=("Arial", 12))
-        back_button.pack(pady=5, anchor="w", padx=10) # Align to the left
+        back_button.pack(pady=5, anchor="w", padx=10)
 
         tk.Label(self, text="Select Date:").pack()
-        self.date_picker = DateEntry(self, width=12, font=("Arial", 12))
+        self.date_picker = DateEntry(self, width=12, font=("Arial", 12), command=lambda: self.load_records(course_id))
         self.date_picker.pack(pady=5)
 
         tk.Button(self, text="Load Records", command=lambda: self.load_records(course_id)).pack(pady=5)
@@ -545,15 +615,14 @@ class AttendanceRecordsWindow(tk.Toplevel):
         self.load_records(course_id)
 
     def load_records(self, course_id):
-        """Loads attendance records for the selected date from the database."""
         selected_date = self.date_picker.get_date()
-        formatted_date_str = selected_date.strftime('%Y-%m-%d') # Format the date object
-        print(f"Loading records for Course ID: {course_id}, Date: {formatted_date_str}") # Debug print
+        formatted_date_str = selected_date.strftime('%Y-%m-%d')
+        print(f"Loading records for Course ID: {course_id}, Date: {formatted_date_str}")
         try:
             conn = get_connection()
             if conn is None:
-                print("Database connection failed in load_records.") # Debug print
-                return # Exit if connection failed
+                print("Database connection failed in load_records.")
+                return
             cursor = conn.cursor()
             sql_query = """
                 SELECT s.student_id, TO_CHAR(a.DATE_ATTENDED, 'YYYY-MM-DD'), a.STATUS
@@ -564,16 +633,16 @@ class AttendanceRecordsWindow(tk.Toplevel):
                 AND TRUNC(a.DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
                 ORDER BY s.student_id ASC, a.DATE_ATTENDED ASC
             """
-            print(f"Executing SQL: {sql_query} with course_id: {course_id}, selected_date: {formatted_date_str}") # Debug print
+            print(f"Executing SQL: {sql_query} with course_id: {course_id}, selected_date: {formatted_date_str}")
             cursor.execute(
                 sql_query,
                 {
                     "cid": course_id,
-                    "selected_date": formatted_date_str, # Use the formatted string
+                    "selected_date": formatted_date_str,
                 },
             )
             records = cursor.fetchall()
-            print(f"Number of records fetched: {len(records)}") # Debug print
+            print(f"Number of records fetched: {len(records)}")
             self.tree.delete(*self.tree.get_children())
 
             for row in records:
@@ -592,10 +661,9 @@ class AttendanceRecordsWindow(tk.Toplevel):
                 "Error", f"Failed to load attendance records: {e}"
             )
         except Exception as e:
-            print(f"An unexpected error occurred: {e}") # Catch any other errors
+            print(f"An unexpected error occurred: {e}")
             logging.error(f"Unexpected error in load_records: {e}")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
-
 
     def go_back(self):
         self.destroy()
