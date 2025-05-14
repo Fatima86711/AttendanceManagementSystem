@@ -43,9 +43,9 @@ class AddStudentWindow(tk.Toplevel):
             cursor = conn.cursor()
             enrollment_id = str(uuid.uuid4())  # Generate a UUID
             query = """
-                INSERT INTO enrollments (enrollment_id, student_id, course_id)
-                VALUES (:enrollment_id, :student_id, :course_id)
-            """
+    INSERT INTO enrollments_insert_view (enrollment_id, student_id, course_id)
+    VALUES (:enrollment_id, :student_id, :course_id)
+"""
             cursor.execute(query, {'enrollment_id': enrollment_id, 'student_id': student_id, 'course_id': self.course_id})
             conn.commit()
             cursor.close()
@@ -90,9 +90,9 @@ class RemoveStudentWindow(tk.Toplevel):
             conn = get_connection()
             cursor = conn.cursor()
             query = """
-                DELETE FROM enrollments
-                WHERE student_id = :student_id AND course_id = :course_id
-            """
+    DELETE FROM enrollments_delete_view
+    WHERE student_id = :student_id AND course_id = :course_id
+"""
             cursor.execute(query, {'student_id': student_id, 'course_id': self.course_id})
             conn.commit()
             cursor.close()
@@ -230,20 +230,18 @@ class AllLeaveRequestsWindow(tk.Toplevel):
                 return
             cursor = conn.cursor()
             cursor.execute(
-                """
-                    SELECT
-                        lr.STUDENT_ID,
-                        c.COURSE_NAME,
-                        TO_CHAR(lr.LEAVE_DATE, 'YYYY-MM-DD'),
-                        lr.REASON,
-                        lr.STATUS,
-                        lr.COURSE_ID,
-                        TO_CHAR(lr.LEAVE_DATE, 'YYYY-MM-DD')
-                    FROM leave_requests lr
-                    JOIN courses c ON lr.COURSE_ID = c.COURSE_ID
-                    WHERE lr.STATUS = 'Pending'
-                """
-            )
+    """
+        SELECT
+            STUDENT_ID,
+            COURSE_NAME,
+            TO_CHAR(LEAVE_DATE, 'YYYY-MM-DD'),
+            REASON,
+            STATUS,
+            COURSE_ID,
+            TO_CHAR(LEAVE_DATE, 'YYYY-MM-DD')
+        FROM pending_leave_requests_view
+    """
+)
 
             self.leave_tree.delete(*self.leave_tree.get_children())
 
@@ -274,13 +272,13 @@ class AllLeaveRequestsWindow(tk.Toplevel):
             conn = get_connection()
             cursor = conn.cursor()
 
-            # Update the leave request status
+            # Update the leave request status via the update view
             cursor.execute(
                 """
-                    UPDATE leave_requests
+                    UPDATE leave_requests_update_view
                     SET status = 'Approved'
                     WHERE STUDENT_ID = :sid
-                      AND COURSE_ID = (SELECT course_id FROM courses WHERE course_name = :cname)
+                      AND COURSE_ID = (SELECT course_id FROM course_name_id_view WHERE course_name = :cname)
                       AND LEAVE_DATE = TO_DATE(:ldate, 'YYYY-MM-DD')
                       AND REASON = :reason
                 """,
@@ -293,19 +291,19 @@ class AllLeaveRequestsWindow(tk.Toplevel):
             )
             conn.commit()
 
-            # Automatically mark attendance as 'Leave' if not already present
+            # Automatically mark attendance as 'Leave' if not already present via the merge view
             cursor.execute("""
-                MERGE INTO ATTENDANCE a
+                MERGE INTO attendance_merge_view a
                 USING (SELECT :sid AS student_id,
-                              (SELECT course_id FROM courses WHERE course_name = :cname) AS course_id,
-                              TO_DATE(:ldate, 'YYYY-MM-DD') AS date_attended,
-                              :day_attended AS day_attended,
-                              'Leave' AS status
+                            (SELECT course_id FROM course_name_id_view WHERE course_name = :cname) AS course_id,
+                            TO_DATE(:ldate, 'YYYY-MM-DD') AS date_attended,
+                            :day_attended AS day_attended,
+                            'Leave' AS status
                        FROM dual) s
                 ON (a.STUDENT_ID = s.student_id AND a.COURSE_ID = s.course_id AND TRUNC(a.DATE_ATTENDED) = s.date_attended)
                 WHEN NOT MATCHED THEN
-                    INSERT (ATTENDANCE_ID, STUDENT_ID, COURSE_ID, DATE_ATTENDED, DAY_ATTENDED, STATUS)
-                    VALUES (attendance_seq.NEXTVAL, s.student_id, s.course_id, s.date_attended, s.day_attended, s.status)
+                    INSERT (STUDENT_ID, COURSE_ID, DATE_ATTENDED, DAY_ATTENDED, STATUS)
+                    VALUES (s.student_id, s.course_id, s.date_attended, s.day_attended, s.status)
                 WHEN MATCHED THEN
                     UPDATE SET a.STATUS = s.status, a.DAY_ATTENDED = s.day_attended
             """, {
@@ -341,10 +339,10 @@ class AllLeaveRequestsWindow(tk.Toplevel):
             cursor = conn.cursor()
             cursor.execute(
                 """
-                    UPDATE leave_requests
+                    UPDATE leave_requests_update_view
                     SET status = 'Rejected'
                     WHERE STUDENT_ID = :sid
-                      AND COURSE_ID = (SELECT course_id FROM courses WHERE course_name = :cname)
+                      AND COURSE_ID = (SELECT course_id FROM course_name_id_view WHERE course_name = :cname)
                       AND LEAVE_DATE = TO_DATE(:ldate, 'YYYY-MM-DD')
                       AND REASON = :reason
                 """,
@@ -362,7 +360,6 @@ class AllLeaveRequestsWindow(tk.Toplevel):
             self.load_leave_requests()  # Refresh the list
         except oracledb.DatabaseError as e:
             messagebox.showerror("Error", f"Error disapproving leave: {e}")
-
     def go_back(self):
         self.destroy()
         self.parent.deiconify()
@@ -460,16 +457,16 @@ class AttendanceWindow(tk.Toplevel):
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT status
-                FROM ATTENDANCE
-                WHERE STUDENT_ID = :student_id
-                  AND COURSE_ID = :course_id
-                  AND TRUNC(DATE_ATTENDED) = TO_DATE(:date_attended, 'YYYY-MM-DD')
-            """, {
-                'student_id': student_id,
-                'course_id': self.course_id,
-                'date_attended': selected_date.strftime('%Y-%m-%d')
-            })
+    SELECT status
+    FROM attendance_status_view
+    WHERE STUDENT_ID = :student_id
+      AND COURSE_ID = :course_id
+      AND TRUNC(DATE_ATTENDED) = TO_DATE(:date_attended, 'YYYY-MM-DD')
+""", {
+    'student_id': student_id,
+    'course_id': self.course_id,
+    'date_attended': selected_date.strftime('%Y-%m-%d')
+})
             result = cursor.fetchone()
             cursor.close()
             conn.close()
@@ -515,44 +512,44 @@ class AttendanceWindow(tk.Toplevel):
             # Check if attendance has already been taken for this course and date
             cursor.execute("""
                 SELECT 1
-                FROM ATTENDANCE
+                FROM attendance_check_view
                 WHERE COURSE_ID = :cid
                   AND TRUNC(DATE_ATTENDED) = TO_DATE(:dat, 'YYYY-MM-DD')
             """, {
                 'cid': self.course_id,
                 'dat': selected_date.strftime('%Y-%m-%d')
             })
-            attendance_exists = cursor.fetchone()
+            attendance_already_marked = cursor.fetchone()
 
-            if attendance_exists:
-                messagebox.showwarning("Warning", "Attendance for this course on this date has already been recorded. Use 'Update Attendance' to modify.");
+            if attendance_already_marked:
+                messagebox.showwarning("Warning", "Attendance for this course on this date has already been marked.")
                 cursor.close()
                 conn.close()
                 return
 
             for student_id, var in self.attendance_vars.items():
                 status = var.get()
-                cursor.execute("""
-                    INSERT INTO ATTENDANCE (ATTENDANCE_ID, STUDENT_ID, COURSE_ID, DATE_ATTENDED, DAY_ATTENDED, STATUS)
-                    VALUES (attendance_seq.NEXTVAL, :sid, :cid, TO_DATE(:dat, 'YYYY-MM-DD'), :day, :stat)
-                """, {
-                    'sid': student_id,
-                    'cid': self.course_id,
-                    'dat': selected_date.strftime('%Y-%m-%d'),
-                    'stat': status,
-                    'day': calendar.day_name[selected_date.weekday()]
-                })
-            conn.commit()
+                # Call the stored procedure to save attendance
+                cursor.callproc('save_attendance_proc', [
+                    self.course_id,
+                    selected_date,
+                    student_id,
+                    calendar.day_name[selected_date.weekday()],
+                    status
+                ])
+
+            conn.commit()  # Commit all attendance records for the day
             cursor.close()
             conn.close()
             messagebox.showinfo("Success", "Attendance saved.")
-        except oracledb.IntegrityError:
-            conn.rollback()
-            messagebox.showerror("Error", "Error saving attendance (duplicate entry).")
-        except Exception as e:
+        except oracledb.DatabaseError as e:
             conn.rollback()
             logging.error(f"Failed to save attendance: {e}")
             messagebox.showerror("Error", f"Failed to save attendance: {e}")
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"An unexpected error occurred: {e}")
+            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
 
     def update_attendance(self):
@@ -563,17 +560,17 @@ class AttendanceWindow(tk.Toplevel):
             for student_id, var in self.attendance_vars.items():
                 status = var.get()
                 cursor.execute("""
-                    UPDATE ATTENDANCE
-                    SET STATUS = :stat
-                    WHERE STUDENT_ID = :sid
-                      AND COURSE_ID = :cid
-                      AND TRUNC(DATE_ATTENDED) = TO_DATE(:dat, 'YYYY-MM-DD')
-                """, {
-                    'stat': status,
-                    'sid': student_id,
-                    'cid': self.course_id,
-                    'dat': selected_date.strftime('%Y-%m-%d')
-                })
+    UPDATE attendance_update_view
+    SET STATUS = :stat
+    WHERE STUDENT_ID = :sid
+      AND COURSE_ID = :cid
+      AND TRUNC(DATE_ATTENDED) = TO_DATE(:dat, 'YYYY-MM-DD')
+""", {
+    'stat': status,
+    'sid': student_id,
+    'cid': self.course_id,
+    'dat': selected_date.strftime('%Y-%m-%d')
+})
             conn.commit()
             cursor.close()
             conn.close()
@@ -625,22 +622,18 @@ class AttendanceRecordsWindow(tk.Toplevel):
                 return
             cursor = conn.cursor()
             sql_query = """
-                SELECT s.student_id, TO_CHAR(a.DATE_ATTENDED, 'YYYY-MM-DD'), a.STATUS
-                FROM ATTENDANCE a
-                JOIN enrollments e ON a.STUDENT_ID = e.STUDENT_ID AND a.COURSE_ID = e.COURSE_ID
-                JOIN students s ON e.STUDENT_ID = s.student_id
-                WHERE a.COURSE_ID = :cid
-                AND TRUNC(a.DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
-                ORDER BY s.student_id ASC, a.DATE_ATTENDED ASC
-            """
-            print(f"Executing SQL: {sql_query} with course_id: {course_id}, selected_date: {formatted_date_str}")
-            cursor.execute(
-                sql_query,
-                {
-                    "cid": course_id,
-                    "selected_date": formatted_date_str,
-                },
-            )
+    SELECT student_id, formatted_date, STATUS
+    FROM attendance_records_view
+    WHERE COURSE_ID = :cid
+      AND TRUNC(DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
+    ORDER BY student_id ASC, DATE_ATTENDED ASC
+"""
+            cursor.execute(sql_query,
+            {
+        "cid": course_id,
+        "selected_date": formatted_date_str,
+    },
+)
             records = cursor.fetchall()
             print(f"Number of records fetched: {len(records)}")
             self.tree.delete(*self.tree.get_children())

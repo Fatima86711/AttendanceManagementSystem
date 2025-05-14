@@ -6,7 +6,7 @@ from teacher_dashboard import TeacherDashboard
 from student_dashboard import StudentDashboard
 
 # Database connection details (replace with your actual credentials)
-DB_CONFIG = {
+DB_CONFIG = {    #dictionary
     'user': 'System',
     'password': 'Server123',
     'dsn': 'localhost/ORCAL'  #  (e.g., 'localhost/orcl')
