@@ -663,7 +663,15 @@ class AttendanceRecordsWindow(tk.Toplevel):
         self.parent.deiconify()
 
 if __name__ == "__main__":
-    teacher_id = 'T004' # Replace with actual teacher ID from login
+    teacher_id = 'T005' # Replace with actual teacher ID from login
     app = TeacherDashboard(teacher_id)
     app.mainloop()
     pass
+
+
+
+
+
+
+# INSERT INTO teachers (teacher_id, first_name, last_name, date_of_birth, gender, age, contact_no, address, department_name, email, password, salary)
+# VALUES ('T005', 'Muhammad', 'Ali', DATE '1988-09-22', 'Male', 36, '03456677889', 'Apt #12, Karachi', 'Mathematics', 'muhammad.ali@university.edu.pk', 'muhammad456', 100000.00);

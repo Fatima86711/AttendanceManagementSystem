@@ -100,7 +100,8 @@ class StudentDashboard(tk.Tk):
         self.show_leave_status = False
 
     def load_courses(self):
-        """Loads the courses for the student from the database and populates the Treeview."""
+        """Loads the courses for the student from the COURSE_ENROLLMENT_VIEW
+        and populates the Treeview."""
         try:
             conn = get_connection()
             if conn is None:
@@ -108,10 +109,9 @@ class StudentDashboard(tk.Tk):
             cursor = conn.cursor()
             cursor.execute(
                 """
-                    SELECT c.course_id, c.course_name
-                    FROM courses c
-                    JOIN enrollments e ON c.course_id = e.course_id
-                    WHERE e.student_id = :sid
+                    SELECT course_id, course_name
+                    FROM COURSE_ENROLLMENT_VIEW
+                    WHERE student_id = :sid
                 """,
                 {"sid": self.student_id},
             )
@@ -219,7 +219,8 @@ class AttendanceRecordsWindow(tk.Toplevel):
         self.load_records()
 
     def load_records(self):
-        """Loads attendance records for the selected date from the database."""
+        """Loads attendance records for the selected date from the
+        STUDENT_ATTENDANCE_VIEW."""
         selected_date = self.date_entry.get_date()
         formatted_date_str = selected_date.strftime('%Y-%m-%d')  # Format the date object
         print(f"Loading records for Student ID: {self.student_id}, Course ID: {self.course_id}, Date: {formatted_date_str}")  # Debug print
@@ -230,12 +231,12 @@ class AttendanceRecordsWindow(tk.Toplevel):
                 return  # Exit if connection failed
             cursor = conn.cursor()
             sql_query = """
-                SELECT DATE_ATTENDED, STATUS
-                FROM ATTENDANCE
-                WHERE COURSE_ID = :cid
-                AND STUDENT_ID = :sid
-                AND TRUNC(DATE_ATTENDED) = TO_DATE(:selected_date, 'YYYY-MM-DD')
-                ORDER BY DATE_ATTENDED ASC
+                SELECT date_attended, status
+                FROM STUDENT_ATTENDANCE_VIEW
+                WHERE course_id = :cid
+                AND student_id = :sid
+                AND TRUNC(date_attended) = TO_DATE(:selected_date, 'YYYY-MM-DD')
+                ORDER BY date_attended ASC
             """
             print(f"Executing SQL: {sql_query} with selected_date: {formatted_date_str}")  # Debug print
             cursor.execute(
@@ -270,8 +271,6 @@ class AttendanceRecordsWindow(tk.Toplevel):
             print(f"An unexpected error occurred: {e}")  # Catch any other errors
             logging.error(f"Unexpected error in load_records: {e}")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
-
-
 
     def go_back(self):
         """Goes back to the parent window."""
@@ -318,7 +317,7 @@ class LeaveRequestWindow(tk.Toplevel):
         ).pack(pady=10)
 
     def submit_leave(self, student_id, course_id):
-        """Submits the leave request to the database."""
+        """Submits the leave request."""
         selected_date = self.date_entry.get_date()
         today = date.today()
 
@@ -334,7 +333,7 @@ class LeaveRequestWindow(tk.Toplevel):
         try:
             conn = get_connection()
             if conn is None:
-                return  # Exit if connection failed
+                return
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -348,7 +347,6 @@ class LeaveRequestWindow(tk.Toplevel):
                     "reason": reason,
                 },
             )
-
             conn.commit()
             cursor.close()
             conn.close()
@@ -359,8 +357,14 @@ class LeaveRequestWindow(tk.Toplevel):
             error_message = e.args[0].message
             logging.error(
                 f"Database Error in submit_leave: {e}, Code: {error_code}, Message: {error_message}"
-            )  # Log the error
-            messagebox.showerror("Error", f"Database Error: {e}")
+            )
+            if error_code == 20001:  # Check for the custom error code
+                messagebox.showerror("Error", error_message)
+            else:
+                messagebox.showerror("Error", f"Database Error: {e}")
+
+
+
 
     def go_back(self):
         """Goes back to the parent window."""
@@ -370,7 +374,8 @@ class LeaveRequestWindow(tk.Toplevel):
 
 class AttendanceStatsWindow(tk.Toplevel):
     """
-    Displays attendance statistics for a specific course and student.
+    Displays attendance statistics for a specific course and student using
+    the ATTENDANCE_STATS_VIEW.
     """
 
     def __init__(self, parent, student_id, course_id, course_name):
@@ -396,52 +401,45 @@ class AttendanceStatsWindow(tk.Toplevel):
         self.load_stats()
 
     def load_stats(self):
-        """Loads and displays attendance statistics from the database."""
+        """Loads and displays attendance statistics from the ATTENDANCE_STATS_VIEW."""
         try:
             conn = get_connection()
             if conn is None:
                 return  # Exit if connection failed
             cursor = conn.cursor()
-
-            # Define output variables
-            present_count = cursor.var(oracledb.NUMBER)
-            absent_count = cursor.var(oracledb.NUMBER)
-            leave_count = cursor.var(oracledb.NUMBER)
-            total_count = cursor.var(oracledb.NUMBER)
-
-            # Call the stored procedure
-            cursor.callproc(
-                "GET_ATTENDANCE_STATS",
-                [self.student_id, self.course_id, present_count, absent_count, leave_count, total_count],
+            cursor.execute(
+                """
+                    SELECT present_count, absent_count, leave_count, total_classes
+                    FROM ATTENDANCE_STATS_VIEW
+                    WHERE student_id = :sid AND course_id = :cid
+                """,
+                {"sid": self.student_id, "cid": self.course_id},
             )
+            result = cursor.fetchone()
 
-            # Get the output values from the variables
-            present_count_val = present_count.getvalue()
-            absent_count_val = absent_count.getvalue()
-            leave_count_val = leave_count.getvalue()
-            total_count_val = total_count.getvalue()
+            if result:
+                present_count_val, absent_count_val, leave_count_val, total_classes =result
 
-            # Handle potential None values by converting them to 0
-            present_count_val = present_count_val if present_count_val is not None else 0
-            absent_count_val = absent_count_val if absent_count_val is not None else 0
-            leave_count_val = leave_count_val if leave_count_val is not None else 0
-            total_count_val = total_count_val if total_count_val is not None else 0
+                # Handle potential None values by converting them to 0
+                present_count_val = present_count_val if present_count_val is not None else 0
+                absent_count_val = absent_count_val if absent_count_val is not None else 0
+                leave_count_val = leave_count_val if leave_count_val is not None else 0
+                total_classes = total_classes if total_classes is not None else 16 # Default if not available
 
-            # Calculate percentages based on 16 total classes
-            total_classes = 16
-            present_percentage = (present_count_val / total_classes) * 100 if total_classes else 0
-            absent_percentage = (absent_count_val / total_classes) * 10
-            leave_percentage = (leave_count_val / total_classes) * 100 if total_classes else 0
+                present_percentage = (present_count_val / total_classes) * 100 if total_classes else 0
+                absent_percentage = (absent_count_val / total_classes) * 100 if total_classes else 0
+                leave_percentage = (leave_count_val / total_classes) * 100 if total_classes else 0
 
-            # Use the returned values
-            self.stats_label.config(
-                text=(
-                    f"Present: {present_count_val} ({present_percentage:.2f}%)\n"
-                    f"Absent: {absent_count_val} ({absent_percentage:.2f}%)\n"
-                    f"Leave: {leave_count_val} ({leave_percentage:.2f}%)\n"
-                    f"Total Classes: {total_classes}"
+                self.stats_label.config(
+                    text=(
+                        f"Present: {present_count_val} ({present_percentage:.2f}%)\n"
+                        f"Absent: {absent_count_val} ({absent_percentage:.2f}%)\n"
+                        f"Leave: {leave_count_val} ({leave_percentage:.2f}%)\n"
+                        f"Total Classes: {total_classes}"
+                    )
                 )
-            )
+            else:
+                self.stats_label.config(text="No statistics available for this course.")
 
             cursor.close()
             conn.close()
@@ -464,7 +462,8 @@ class AttendanceStatsWindow(tk.Toplevel):
 
 class OverallAttendanceWindow(tk.Toplevel):
     """
-    Displays overall attendance for a specific course and student.
+    Displays overall attendance for a specific course and student using
+    the OVERALL_ATTENDANCE_VIEW.
     """
 
     def __init__(self, parent, student_id, course_id, course_name):
@@ -492,25 +491,26 @@ class OverallAttendanceWindow(tk.Toplevel):
         self.load_overall_attendance()
 
     def load_overall_attendance(self):
-        """Loads and displays overall attendance from the database."""
+        """Loads and displays overall attendance from the OVERALL_ATTENDANCE_VIEW."""
         try:
             conn = get_connection()
             if conn is None:
                 return  # Exit if connection failed
             cursor = conn.cursor()
-            attendance_cursor = cursor.var(oracledb.CURSOR)
-            cursor.callproc(
-                "GET_OVERALL_ATTENDANCE",
-                [self.student_id, self.course_id, attendance_cursor],
+            cursor.execute(
+                """
+                    SELECT date_attended, status
+                    FROM OVERALL_ATTENDANCE_VIEW
+                    WHERE student_id = :sid AND course_id = :cid
+                    ORDER BY date_attended ASC
+                """,
+                {"sid": self.student_id, "cid": self.course_id},
             )
-            results = attendance_cursor.getvalue()
-            if results:
-                rows = results.fetchall()
-                self.tree.delete(*self.tree.get_children())
-                for row in rows:
-                    formatted_date = row[0]
-                    self.tree.insert("", tk.END, values=(formatted_date, row[1]))
-                results.close()
+            records = cursor.fetchall()
+            self.tree.delete(*self.tree.get_children())
+            for row in records:
+                formatted_date = row[0].strftime("%Y-%m-%d")
+                self.tree.insert("", tk.END, values=(formatted_date, row[1]))
             cursor.close()
             conn.close()
         except oracledb.DatabaseError as e:
@@ -531,7 +531,8 @@ class OverallAttendanceWindow(tk.Toplevel):
 
 class LeaveRequestStatusWindow(tk.Toplevel):
     """
-    Displays the status of leave requests for a student.
+    Displays the status of leave requests for a student using the
+    PENDING_LEAVE_REQUESTS_VIEW.
     """
 
     def __init__(self, parent, student_id):
@@ -552,10 +553,9 @@ class LeaveRequestStatusWindow(tk.Toplevel):
 
         self.leave_tree = ttk.Treeview(
             self,
-            columns=("Request ID", "Course", "Date", "Reason", "Status"),
+            columns=("Course", "Date", "Reason", "Status"),
             show="headings",
         )
-        self.leave_tree.heading("Request ID", text="Request ID")
         for col in ("Course", "Date", "Reason", "Status"):
             self.leave_tree.heading(col, text=col)
             self.leave_tree.column(col, width=120, anchor="center")
@@ -569,7 +569,8 @@ class LeaveRequestStatusWindow(tk.Toplevel):
         self.load_leave_requests()
 
     def load_leave_requests(self):
-        """Loads pending leave requests for the student from the view."""
+        """Loads pending leave requests for the student from the
+        PENDING_LEAVE_REQUESTS_VIEW."""
         try:
             conn = get_connection()
             if conn is None:
@@ -588,8 +589,8 @@ class LeaveRequestStatusWindow(tk.Toplevel):
 
             for row in cursor.fetchall():
                 self.leave_tree.insert(
-                    "", tk.END, values=(None, row[0], row[1], row[2], row[3])
-                )  # Request ID is not in the view
+                    "", tk.END, values=(row[0], row[1], row[2], row[3])
+                )
 
             cursor.close()
             conn.close()
@@ -602,16 +603,15 @@ class LeaveRequestStatusWindow(tk.Toplevel):
             )
             messagebox.showerror("Error", f"Failed to load leave requests: {e}")
 
-
     def dismiss_leave_request(self):
-        """Dismisses the selected leave request by updating its status in the table."""
+        """Dismisses the selected leave request by updating its status in the
+        underlying LEAVE_REQUESTS table."""
         selected_item = self.leave_tree.selection()
         if not selected_item:
             messagebox.showwarning("Warning", "Please select a leave request to dismiss.")
             return
 
-        # We don't have the Request ID directly from the view, so we need to query the table
-        course_name, leave_date_str, reason, status = self.leave_tree.item(selected_item)["values"][1:]
+        course_name, leave_date_str, reason, status = self.leave_tree.item(selected_item)["values"]
         try:
             conn = get_connection()
             if conn is None:
@@ -647,8 +647,6 @@ class LeaveRequestStatusWindow(tk.Toplevel):
             )
             messagebox.showerror("Error", f"Failed to dismiss leave request: {e}")
 
-
-
     def go_back(self):
         """Goes back to the parent window."""
         self.destroy()
@@ -660,3 +658,10 @@ if __name__ == "__main__":
     student_id = "22-SE-21"
     app = StudentDashboard(student_id)
     app.mainloop()
+
+
+
+
+    
+# INSERT INTO students (student_id, first_name, last_name, date_of_birth, gender, age, contact_no, address, department_name, email, password)
+# VALUES ('22-SE-21', 'Junaid', 'Khan', DATE '2002-08-03', 'Male', 23, '03221122334', 'House #4A, Gujranwala', 'Software Engineering', 'junaid.khan@university.edu.pk', 'junaid6789');
