@@ -1,6 +1,6 @@
 # Attendance Management System
 
-A Python-based attendance management system using Tkinter for the GUI and Oracle SQL for the database.
+A java-based attendance management system using javafx for the GUI and Oracle SQL for the database.
 
 ## Features
 
@@ -12,13 +12,13 @@ A Python-based attendance management system using Tkinter for the GUI and Oracle
 
 ## Technologies Used
 
-- Python
-- Tkinter
+- Java
+- javafx
 - Oracle SQL
 
 ## Setup
 
-1.  Install Python and Oracle SQL Developer.
+1.  Install java and Oracle SQL Developer.
 2.  Set up the Oracle database.
 3.  Clone this repository.
 4.  Run the application.
